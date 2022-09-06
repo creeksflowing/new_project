@@ -1,18 +1,22 @@
-import asyncio
+# import asyncio
 import logging
 import queue
 import threading
-import urllib.request
-from pathlib import Path
-from typing import List, NamedTuple, Optional
 
-import av
-import cv2
+# import urllib.request
+from pathlib import Path
+
+# from typing import List, NamedTuple, Optional
+
+# import av
+# import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pydub
 import streamlit as st
-from aiortc.contrib.media import MediaPlayer
+import streamlit.components.v1 as components
+
+# from aiortc.contrib.media import MediaPlayer
 
 from numba import jit
 from scipy import signal
@@ -24,7 +28,7 @@ from scipy.io import wavfile
 from streamlit_webrtc import (
     RTCConfiguration,
     WebRtcMode,
-    WebRtcStreamerContext,
+    # WebRtcStreamerContext,
     webrtc_streamer,
 )
 
@@ -299,15 +303,16 @@ def app_room_measurements():
         if "stop_button_state" not in st.session_state:
             st.session_state.stop_button_state = False
 
-        sd.play(data, sample_rate)
+        # sd.play(data, sample_rate)
 
         if stop_button or st.session_state.stop_button_state:
             st.session_state.stop_button_state = True
 
-            sd.stop()
+            # sd.stop()
 
         else:
-            sd.wait()  # Wait until file is done playing
+            # sd.wait()  # Wait until file is done playing
+            pass
 
     user_input = str(st.text_input("Name your file: "))
 
@@ -338,7 +343,86 @@ def app_room_measurements():
                 file_name=inv_filter_string, rate=sample_rate_option, data=inv_filter
             )
 
-            play_sweep(sweep_string)
+            # play_sweep(sweep_string)
+            components.html(
+                """
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Document</title>
+                </head>
+                <body>
+                    <!-- Set up your HTML here -->
+                    <center>
+                        <p><button id="record">Record</button></p>
+                        <div id="sound-clip"></div>
+                    </center>
+                    <script src="https://code.jquery.com/jquery-3.3.1.min.js"
+                        integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8=" crossorigin="anonymous"></script>
+                    <script>
+                        // Set up the AudioContext.
+                        const audioCtx = new AudioContext();
+
+                        // Top-level variable keeps track of whether we are recording or not.
+                        let recording = false;
+
+                        // Ask user for access to the microphone.
+                        if (navigator.mediaDevices) {
+                            navigator.mediaDevices.getUserMedia({ "audio": true }).then((stream) => {
+
+                                // Instantiate the media recorder.
+                                const mediaRecorder = new MediaRecorder(stream);
+
+                                // Create a buffer to store the incoming data.
+                                let chunks = [];
+                                mediaRecorder.ondataavailable = (event) => {
+                                    chunks.push(event.data);
+                                }
+
+                                // When you stop the recorder, create a empty audio clip.
+                                mediaRecorder.onstop = (event) => {
+                                    const audio = new Audio();
+                                    audio.setAttribute("controls", "");
+                                    $("#sound-clip").append(audio);
+                                    $("#sound-clip").append("<br />");
+
+                                    // Combine the audio chunks into a blob, then point the empty audio clip to that blob.
+                                    const blob = new Blob(chunks, { "type": "audio/ogg; codecs=opus" });
+                                    audio.src = window.URL.createObjectURL(blob);
+
+                                    // Clear the `chunks` buffer so that you can record again.
+                                    chunks = [];
+                                };
+
+                                mediaRecorder.start();
+                                recording = true;
+                                $("#record").html("Stop");
+
+                                // Set up event handler for the "Record" button.
+                                $("#record").on("click", () => {
+                                    if (recording) {
+                                        mediaRecorder.stop();
+                                        recording = false;
+                                        $("#record").html("Record");
+                                    }
+                                });
+
+                            }).catch((err) => {
+                                // Throw alert when the browser is unable to access the microphone.
+                                alert("Oh no! Your browser cannot access your computer's microphone.");
+                            });
+                        } else {
+                            // Throw alert when the browser cannot access any media devices.
+                            alert("Oh no! Your browser cannot access your computer's microphone. Please update your browser.");
+                        }
+                    </script>
+                </body>
+                </html>
+            """
+            )
 
 
 if __name__ == "__main__":
