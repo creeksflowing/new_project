@@ -316,14 +316,6 @@ def app_room_measurements():
     def record_sweep():
         components.html(
             """
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>Document</title>
-                </head>
                 <body>
                     <!-- Set up your HTML here -->
                     <center>
@@ -392,7 +384,6 @@ def app_room_measurements():
                         }
                     </script>
                 </body>
-                </html>
             """
         )
 
