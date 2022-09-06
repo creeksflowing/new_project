@@ -15,6 +15,7 @@ import numpy as np
 import pydub
 import streamlit as st
 import streamlit.components.v1 as components
+import sounddevice as sd
 
 # from aiortc.contrib.media import MediaPlayer
 
@@ -45,7 +46,6 @@ def main():
     st.header("WebRTC demo")
 
     pages = {
-        "WebRTC is sendonly and audio frames are visualized with matplotlib (sendonly)": app_sendonly_audio,
         # noqa: E501
         "Plot audio representation with scikit-maad": app_room_measurements,
     }
@@ -303,49 +303,19 @@ def app_room_measurements():
         if "stop_button_state" not in st.session_state:
             st.session_state.stop_button_state = False
 
-        # sd.play(data, sample_rate)
+        sd.play(data, sample_rate)
 
         if stop_button or st.session_state.stop_button_state:
             st.session_state.stop_button_state = True
 
-            # sd.stop()
+            sd.stop()
 
         else:
-            # sd.wait()  # Wait until file is done playing
-            pass
+            print("Sweep done playing")
 
-    user_input = str(st.text_input("Name your file: "))
-
-    if user_input:
-        sweep_string = user_input + "_exponential_sweep_.wav"
-        inv_filter_string = user_input + "_inverse_filter_.wav"
-        ir_string = user_input + "_impulse_response_.wav"
-
-        st.write(sweep_string)
-
-        play_button = st.button("Play")
-
-        if "play_button_state" not in st.session_state:
-            st.session_state.play_button_state = False
-
-        if play_button or st.session_state.play_button_state:
-            st.session_state.play_button_state = True
-
-            sweep = generate_exponential_sweep(
-                sweep_duration_option, sample_rate_option, 20, 24000
-            )
-            inv_filter = generate_inverse_filter(
-                sweep_duration_option, sample_rate_option, sweep, 20, 24000
-            )
-
-            write_wav_file(file_name=sweep_string, rate=sample_rate_option, data=sweep)
-            write_wav_file(
-                file_name=inv_filter_string, rate=sample_rate_option, data=inv_filter
-            )
-
-            # play_sweep(sweep_string)
-            components.html(
-                """
+    def record_sweep():
+        components.html(
+            """
                 <!DOCTYPE html>
                 <html lang="en">
                 <head>
@@ -390,7 +360,7 @@ def app_room_measurements():
                                     $("#sound-clip").append("<br />");
 
                                     // Combine the audio chunks into a blob, then point the empty audio clip to that blob.
-                                    const blob = new Blob(chunks, { "type": "audio/ogg; codecs=opus" });
+                                    const blob = new Blob(chunks, { "type": "audio/wav; codecs=0" });
                                     audio.src = window.URL.createObjectURL(blob);
 
                                     // Clear the `chunks` buffer so that you can record again.
@@ -407,6 +377,8 @@ def app_room_measurements():
                                         mediaRecorder.stop();
                                         recording = false;
                                         $("#record").html("Record");
+                                    } else {
+                                        $("#record").html("Stop");
                                     }
                                 });
 
@@ -422,7 +394,39 @@ def app_room_measurements():
                 </body>
                 </html>
             """
+        )
+
+    user_input = str(st.text_input("Name your file: "))
+
+    if user_input:
+        sweep_string = user_input + "_exponential_sweep_.wav"
+        inv_filter_string = user_input + "_inverse_filter_.wav"
+        ir_string = user_input + "_impulse_response_.wav"
+
+        st.write(sweep_string)
+
+        play_button = st.button("Play")
+
+        if "play_button_state" not in st.session_state:
+            st.session_state.play_button_state = False
+
+        if play_button or st.session_state.play_button_state:
+            st.session_state.play_button_state = True
+
+            sweep = generate_exponential_sweep(
+                sweep_duration_option, sample_rate_option, 20, 24000
             )
+            inv_filter = generate_inverse_filter(
+                sweep_duration_option, sample_rate_option, sweep, 20, 24000
+            )
+
+            write_wav_file(file_name=sweep_string, rate=sample_rate_option, data=sweep)
+            write_wav_file(
+                file_name=inv_filter_string, rate=sample_rate_option, data=inv_filter
+            )
+
+            play_sweep(sweep_string)
+            record_sweep()
 
 
 if __name__ == "__main__":
