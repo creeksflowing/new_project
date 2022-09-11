@@ -1,4 +1,5 @@
 # import asyncio
+import time
 import logging
 import queue
 import threading
@@ -12,10 +13,12 @@ from pathlib import Path
 # import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import pydub
 import streamlit as st
-import streamlit.components.v1 as components
+
+# import streamlit.components.v1 as components
 import sounddevice as sd
+from pydub import AudioSegment
+from pydub.silence import split_on_silence
 
 # from aiortc.contrib.media import MediaPlayer
 
@@ -290,10 +293,15 @@ def app_room_measurements():
 
     def write_wav_file(file_name, rate, data):
         save_file_path = os.path.join(audio_files_path, file_name)
-        wavfile.write(save_file_path, rate, data)
+        wavfile.write(save_file_path, rate, data.astype(np.float32))
         st.success(f"File successfully written to audio_files_path as:>> {file_name}")
 
-    def play_sweep(wavefile_name):
+    def load_wav_file(file_name):
+        save_file_path = os.path.join(audio_files_path, file_name)
+        rate, data = wavfile.read(save_file_path)
+        return data
+
+    def playrec_sweep(wavefile_name):
         read_file_path = os.path.join(audio_files_path, wavefile_name)
         # Extract data and sampling rate from file
         sample_rate, data = wavfile.read(read_file_path)
@@ -303,7 +311,7 @@ def app_room_measurements():
         if "stop_button_state" not in st.session_state:
             st.session_state.stop_button_state = False
 
-        sd.play(data, sample_rate)
+        user_sweep = sd.playrec(data, sample_rate, channels=1, blocking=True)
 
         if stop_button or st.session_state.stop_button_state:
             st.session_state.stop_button_state = True
@@ -311,88 +319,39 @@ def app_room_measurements():
             sd.stop()
 
         else:
+            sd.wait()
+            write_wav_file(
+                file_name=user_sweep_string, rate=sample_rate_option, data=user_sweep
+            )
             print("Sweep done playing")
 
-    def record_sweep():
-        components.html(
-            """
-                <body>
-                    <!-- Set up your HTML here -->
-                    <center>
-                        <p><button id="record">Record</button></p>
-                        <div id="sound-clip"></div>
-                    </center>
-                    <script src="https://code.jquery.com/jquery-3.3.1.min.js"
-                        integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8=" crossorigin="anonymous"></script>
-                    <script>
-                        // Set up the AudioContext.
-                        const audioCtx = new AudioContext();
+    def add_zeros(array, seconds_to_add, sr):
+        num_zeros = seconds_to_add * sr
+        resulting_array = np.pad(array, (0, num_zeros), "constant")
 
-                        // Top-level variable keeps track of whether we are recording or not.
-                        let recording = false;
+        return resulting_array
 
-                        // Ask user for access to the microphone.
-                        if (navigator.mediaDevices) {
-                            navigator.mediaDevices.getUserMedia({ "audio": true }).then((stream) => {
-
-                                // Instantiate the media recorder.
-                                const mediaRecorder = new MediaRecorder(stream);
-
-                                // Create a buffer to store the incoming data.
-                                let chunks = [];
-                                mediaRecorder.ondataavailable = (event) => {
-                                    chunks.push(event.data);
-                                }
-
-                                // When you stop the recorder, create a empty audio clip.
-                                mediaRecorder.onstop = (event) => {
-                                    const audio = new Audio();
-                                    audio.setAttribute("controls", "");
-                                    $("#sound-clip").append(audio);
-                                    $("#sound-clip").append("<br />");
-
-                                    // Combine the audio chunks into a blob, then point the empty audio clip to that blob.
-                                    const blob = new Blob(chunks, { "type": "audio/wav; codecs=0" });
-                                    audio.src = window.URL.createObjectURL(blob);
-
-                                    // Clear the `chunks` buffer so that you can record again.
-                                    chunks = [];
-                                };
-
-                                mediaRecorder.start();
-                                recording = true;
-                                $("#record").html("Stop");
-
-                                // Set up event handler for the "Record" button.
-                                $("#record").on("click", () => {
-                                    if (recording) {
-                                        mediaRecorder.stop();
-                                        recording = false;
-                                        $("#record").html("Record");
-                                    } else {
-                                        $("#record").html("Stop");
-                                    }
-                                });
-
-                            }).catch((err) => {
-                                // Throw alert when the browser is unable to access the microphone.
-                                alert("Oh no! Your browser cannot access your computer's microphone.");
-                            });
-                        } else {
-                            // Throw alert when the browser cannot access any media devices.
-                            alert("Oh no! Your browser cannot access your computer's microphone. Please update your browser.");
-                        }
-                    </script>
-                </body>
-            """
+    def remove_silence(wavefile_name):
+        read_file_path = os.path.join(audio_files_path, wavefile_name)
+        sound = AudioSegment.from_file(read_file_path, format="wav")
+        audio_chunks = split_on_silence(
+            sound, min_silence_len=100, silence_thresh=-60, keep_silence=50
         )
+
+        combined = AudioSegment.empty()
+
+        for chunk in audio_chunks:
+            combined += chunk
+
+        combined.export(f"./{audio_files_path}/{wavefile_name}", format="wav")
 
     user_input = str(st.text_input("Name your file: "))
 
     if user_input:
-        sweep_string = user_input + "_exponential_sweep_.wav"
-        inv_filter_string = user_input + "_inverse_filter_.wav"
-        ir_string = user_input + "_impulse_response_.wav"
+        sweep_string = user_input + "_exponential_sweep.wav"
+        inv_filter_string = user_input + "_inverse_filter.wav"
+        user_sweep_string = user_input + "_user_exponential_sweep.wav"
+        ir_string = user_input + "_impulse_response.wav"
 
         st.write(sweep_string)
 
@@ -405,19 +364,49 @@ def app_room_measurements():
             st.session_state.play_button_state = True
 
             sweep = generate_exponential_sweep(
-                sweep_duration_option, sample_rate_option, 20, 24000
+                sweep_duration_option,
+                sample_rate_option,
+                20,
+                24000,
             )
             inv_filter = generate_inverse_filter(
-                sweep_duration_option, sample_rate_option, sweep, 20, 24000
+                sweep_duration_option,
+                sample_rate_option,
+                sweep,
+                20,
+                24000,
             )
 
-            write_wav_file(file_name=sweep_string, rate=sample_rate_option, data=sweep)
             write_wav_file(
-                file_name=inv_filter_string, rate=sample_rate_option, data=inv_filter
+                file_name=sweep_string,
+                rate=sample_rate_option,
+                data=add_zeros(sweep, max_reverb_option + 1, sample_rate_option),
+            )
+            write_wav_file(
+                file_name=inv_filter_string,
+                rate=sample_rate_option,
+                data=add_zeros(inv_filter, max_reverb_option + 1, sample_rate_option),
             )
 
-            play_sweep(sweep_string)
-            record_sweep()
+            playrec_sweep(sweep_string)
+
+            time.sleep(1)
+
+            # user_sweep = load_wav_file(user_sweep_string)
+            # inverse_filter = load_wav_file(inv_filter_string)
+            remove_silence(user_sweep_string)
+            remove_silence(inv_filter_string)
+
+
+"""
+            write_wav_file(
+                file_name=ir_string,
+                rate=sample_rate_option,
+                data=deconvolve(
+                    r, 
+                ),
+            )
+"""
 
 
 if __name__ == "__main__":
