@@ -1,159 +1,66 @@
-# import asyncio
+from __future__ import print_function
 import time
-import logging
-import queue
-import threading
-
-# import urllib.request
 from pathlib import Path
-
-# from typing import List, NamedTuple, Optional
-
-# import av
-# import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
-
-# import streamlit.components.v1 as components
 import sounddevice as sd
 from pydub import AudioSegment
 from pydub.silence import split_on_silence
-
-# from aiortc.contrib.media import MediaPlayer
-
 from numba import jit
 from scipy import signal
 from scipy.io import wavfile
-
-# from maad import sound
-# from maad import util
-
-from streamlit_webrtc import (
-    RTCConfiguration,
-    WebRtcMode,
-    # WebRtcStreamerContext,
-    webrtc_streamer,
+from scipy import stats
+import pandas as pd
+import acoustics
+import acoustics.bands
+import acoustics.octave
+from acoustics.bands import (
+    _check_band_type,
+    octave_low,
+    octave_high,
+    third_low,
+    third_high,
 )
+from acoustics.signal import bandpass
+from acoustics.standards.iec_61672_1_2013 import (
+    NOMINAL_OCTAVE_CENTER_FREQUENCIES,
+    NOMINAL_THIRD_OCTAVE_CENTER_FREQUENCIES,
+)
+
+
+import PyOctaveBand
+
+try:
+    from pyfftw.interfaces.numpy_fft import rfft
+except ImportError:
+    from numpy.fft import rfft
+
+OCTAVE_CENTER_FREQUENCIES = NOMINAL_OCTAVE_CENTER_FREQUENCIES
+THIRD_OCTAVE_CENTER_FREQUENCIES = NOMINAL_THIRD_OCTAVE_CENTER_FREQUENCIES
+
+st.set_option("deprecation.showPyplotGlobalUse", False)
 
 HERE = Path(__file__).parent
+AUDIO_FILES_PATH = r"data/audio_files"
 
-logger = logging.getLogger(__name__)
 
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
+def write_wav_file(file_name, rate, data):
+    save_file_path = os.path.join(AUDIO_FILES_PATH, file_name)
+    wavfile.write(save_file_path, rate, data.astype(np.float32))
+
+
+def load_wav_file(file_name):
+    save_file_path = os.path.join(AUDIO_FILES_PATH, file_name)
+    rate, data = wavfile.read(save_file_path)
+    return data
 
 
 def main():
-    st.header("WebRTC demo")
-
-    pages = {
-        # noqa: E501
-        "Plot audio representation with scikit-maad": app_room_measurements,
-    }
-    page_titles = pages.keys()
-
-    page_title = st.sidebar.selectbox(
-        "Choose the app mode",
-        page_titles,
-    )
-    st.subheader(page_title)
-
-    page_func = pages[page_title]
-    page_func()
-
-    logger.debug("=== Alive threads ===")
-    for thread in threading.enumerate():
-        if thread.is_alive():
-            logger.debug(f"  {thread.name} ({thread.ident})")
-
-
-def app_sendonly_audio():
-    """A sample to use WebRTC in sendonly mode to transfer audio frames
-    from the browser to the server and visualize them with matplotlib
-    and `st.pyplot`."""
-    webrtc_ctx = webrtc_streamer(
-        key="sendonly-audio",
-        mode=WebRtcMode.SENDONLY,
-        audio_receiver_size=256,
-        rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={"audio": True},
-    )
-
-    fig_place = st.empty()
-
-    fig, [ax_time, ax_freq] = plt.subplots(
-        2, 1, gridspec_kw={"top": 1.5, "bottom": 0.2}
-    )
-
-    sound_window_len = 5000  # 5s
-    sound_window_buffer = None
-    while True:
-        if webrtc_ctx.audio_receiver:
-            try:
-                audio_frames = webrtc_ctx.audio_receiver.get_frames(timeout=1)
-            except queue.Empty:
-                logger.warning("Queue is empty. Abort.")
-                break
-
-            sound_chunk = pydub.AudioSegment.empty()
-            for audio_frame in audio_frames:
-                sound = pydub.AudioSegment(
-                    data=audio_frame.to_ndarray().tobytes(),
-                    sample_width=audio_frame.format.bytes,
-                    frame_rate=audio_frame.sample_rate,
-                    channels=len(audio_frame.layout.channels),
-                )
-                sound_chunk += sound
-
-            if len(sound_chunk) > 0:
-                if sound_window_buffer is None:
-                    sound_window_buffer = pydub.AudioSegment.silent(
-                        duration=sound_window_len
-                    )
-
-                sound_window_buffer += sound_chunk
-                if len(sound_window_buffer) > sound_window_len:
-                    sound_window_buffer = sound_window_buffer[-sound_window_len:]
-
-            if sound_window_buffer:
-                # Ref: https://own-search-and-study.xyz/2017/10/27/python%E3%82%92%E4%BD%BF%E3%81%A3%E3%81%A6%E9%9F%B3%E5%A3%B0%E3%83%87%E3%83%BC%E3%82%BF%E3%81%8B%E3%82%89%E3%82%B9%E3%83%9A%E3%82%AF%E3%83%88%E3%83%AD%E3%82%B0%E3%83%A9%E3%83%A0%E3%82%92%E4%BD%9C/  # noqa
-                sound_window_buffer = sound_window_buffer.set_channels(
-                    1
-                )  # Stereo to mono
-                sample = np.array(sound_window_buffer.get_array_of_samples())
-
-                ax_time.cla()
-                times = (np.arange(-len(sample), 0)) / sound_window_buffer.frame_rate
-                ax_time.plot(times, sample)
-                ax_time.set_xlabel("Time")
-                ax_time.set_ylabel("Magnitude")
-
-                spec = np.fft.fft(sample)
-                freq = np.fft.fftfreq(sample.shape[0], 1.0 / sound_chunk.frame_rate)
-                freq = freq[: int(freq.shape[0] / 2)]
-                spec = spec[: int(spec.shape[0] / 2)]
-                spec[0] = spec[0] / 2
-
-                ax_freq.cla()
-                ax_freq.plot(freq, np.abs(spec))
-                ax_freq.set_xlabel("Frequency")
-                ax_freq.set_yscale("log")
-                ax_freq.set_ylabel("Magnitude")
-
-                fig_place.pyplot(fig)
-        else:
-            logger.warning("AudioReciver is not set. Abort.")
-            break
+    st.header("Wave(r)")
 
 
 def app_room_measurements():
-    audio_files_path = r"data/audio_files"
-    sweep_string = ""
-    inv_filter_string = ""
-    ir_string = ""
-
     @jit(nopython=True)
     def fade(data, gain_start, gain_end):
         """
@@ -278,52 +185,26 @@ def app_room_measurements():
 
         return normalized_ir
 
-    sample_rate_option = st.selectbox("Select the desired sample rate", (44100, 48000))
-    sweep_duration_option = st.selectbox("Select the duration of the sweep", (3, 7, 14))
-    max_reverb_option = st.selectbox(
-        "Select the expected maximum reverb decay time", (1, 2, 3, 5, 10)
-    )
+    def select_option():
+        global sample_rate_option
+        global sweep_duration_option
+        global max_reverb_option
+        sample_rate_option = st.selectbox(
+            "Select the desired sample rate", (44100, 48000)
+        )
+        sweep_duration_option = st.selectbox(
+            "Select the duration of the sweep", (3, 7, 14)
+        )
+        max_reverb_option = st.selectbox(
+            "Select the expected maximum reverb decay time", (1, 2, 3, 5, 10)
+        )
 
-    st.caption(
-        """
-                Note that longer sweeps provide more accuracy,
-                but even short sweeps can be used to measure long decays
-                """
-    )
-
-    def write_wav_file(file_name, rate, data):
-        save_file_path = os.path.join(audio_files_path, file_name)
-        wavfile.write(save_file_path, rate, data.astype(np.float32))
-        st.success(f"File successfully written to audio_files_path as:>> {file_name}")
-
-    def load_wav_file(file_name):
-        save_file_path = os.path.join(audio_files_path, file_name)
-        rate, data = wavfile.read(save_file_path)
-        return data
-
-    def playrec_sweep(wavefile_name):
-        read_file_path = os.path.join(audio_files_path, wavefile_name)
-        # Extract data and sampling rate from file
-        sample_rate, data = wavfile.read(read_file_path)
-
-        stop_button = st.button("Stop")
-
-        if "stop_button_state" not in st.session_state:
-            st.session_state.stop_button_state = False
-
-        user_sweep = sd.playrec(data, sample_rate, channels=1, blocking=True)
-
-        if stop_button or st.session_state.stop_button_state:
-            st.session_state.stop_button_state = True
-
-            sd.stop()
-
-        else:
-            sd.wait()
-            write_wav_file(
-                file_name=user_sweep_string, rate=sample_rate_option, data=user_sweep
-            )
-            print("Sweep done playing")
+        st.caption(
+            """
+                    Note that longer sweeps provide more accuracy,
+                    but even short sweeps can be used to measure long decays
+                    """
+        )
 
     def add_zeros(array, seconds_to_add, sr):
         num_zeros = seconds_to_add * sr
@@ -332,10 +213,10 @@ def app_room_measurements():
         return resulting_array
 
     def remove_silence(wavefile_name):
-        read_file_path = os.path.join(audio_files_path, wavefile_name)
+        read_file_path = os.path.join(AUDIO_FILES_PATH, wavefile_name)
         sound = AudioSegment.from_file(read_file_path, format="wav")
         audio_chunks = split_on_silence(
-            sound, min_silence_len=100, silence_thresh=-60, keep_silence=50
+            sound, min_silence_len=100, silence_thresh=-90, keep_silence=50
         )
 
         combined = AudioSegment.empty()
@@ -343,89 +224,318 @@ def app_room_measurements():
         for chunk in audio_chunks:
             combined += chunk
 
-        combined.export(f"./{audio_files_path}/{wavefile_name}", format="wav")
+        combined.export(f"./{AUDIO_FILES_PATH}/{wavefile_name}", format="wav")
 
-    user_input = str(st.text_input("Name your file: "))
+    def third(first, last):
+        """
+        Generate a Numpy array for central frequencies of third octave bands.
 
-    if user_input:
-        sweep_string = user_input + "_exponential_sweep.wav"
-        inv_filter_string = user_input + "_inverse_filter.wav"
-        user_sweep_string = user_input + "_user_exponential_sweep.wav"
-        ir_string = user_input + "_impulse_response.wav"
+        Parameters
+        ----------
+        first : scalar
+        First third octave center frequency.
 
-        st.write(sweep_string)
+        last : scalar
+            Last third octave center frequency.
 
-        play_button = st.button("Play")
+        Returns
+        -------
+        octave_bands : array
+            An array of center frequency third octave bands.
+        """
 
-        if "play_button_state" not in st.session_state:
-            st.session_state.play_button_state = False
+        return acoustics.signal.OctaveBand(fstart=first, fstop=last, fraction=3).nominal
 
-        if play_button or st.session_state.play_button_state:
-            st.session_state.play_button_state = True
+    def t60_impulse(file_name, bands, rt="t30"):  # pylint: disable=too-many-locals
+        """
+        Reverberation time from a WAV impulse response.
 
-            sweep = generate_exponential_sweep(
-                sweep_duration_option,
-                sample_rate_option,
-                20,
-                24000,
-            )
-            inv_filter = generate_inverse_filter(
-                sweep_duration_option,
-                sample_rate_option,
-                sweep,
-                20,
-                24000,
-            )
+        Parameters
+        ----------
+        file: .wav
+            Name of the WAV file containing the impulse response.
 
-            write_wav_file(
-                file_name=sweep_string,
-                rate=sample_rate_option,
-                data=add_zeros(sweep, max_reverb_option + 1, sample_rate_option),
-            )
-            write_wav_file(
-                file_name=inv_filter_string,
-                rate=sample_rate_option,
-                data=add_zeros(inv_filter, max_reverb_option + 1, sample_rate_option),
-            )
+        bands: array
+            Octave or third bands as NumPy array.
 
-            playrec_sweep(sweep_string)
+        rt: instruction
+            Reverberation time estimator. It accepts `'t30'`, `'t20'`, `'t10'` and `'edt'`.
 
-            time.sleep(1)
+        Returns
+        -------
+        t60: array
+            Reverberation time :math:`T_{60}`
+        """
+        save_file_path = os.path.join(AUDIO_FILES_PATH, file_name)
+        fs, raw_signal = wavfile.read(save_file_path)
+        band_type = _check_band_type(bands)
 
-            # user_sweep = load_wav_file(user_sweep_string)
-            # inverse_filter = load_wav_file(inv_filter_string)
-            remove_silence(user_sweep_string)
-            remove_silence(inv_filter_string)
+        if band_type == "octave":
+            low = octave_low(bands[0], bands[-1])  # [-1] = last element in the list
+            high = octave_high(bands[0], bands[-1])
+        elif band_type == "third":
+            low = third_low(bands[0], bands[-1])
+            high = third_high(bands[0], bands[-1])
 
+        # Obbligo rt ad essere lower-case
+        rt = rt.lower()
+        if rt == "t30":
+            init = -5.0
+            end = -35.0
+            factor = 2.0
+        elif rt == "t20":
+            init = -5.0
+            end = -25.0
+            factor = 3.0
+        elif rt == "t10":
+            init = -5.0
+            end = -15.0
+            factor = 6.0
+        elif rt == "edt":
+            init = 0.0
+            end = -10.0
+            factor = 6.0
 
-"""
-            write_wav_file(
-                file_name=ir_string,
-                rate=sample_rate_option,
-                data=deconvolve(
-                    r, 
-                ),
-            )
-"""
+        t60 = np.zeros(bands.size)
+
+        for band in range(bands.size):
+            # Filtering signal
+            filtered_signal = bandpass(raw_signal, low[band], high[band], fs, order=8)
+            abs_signal = np.abs(filtered_signal) / np.max(np.abs(filtered_signal))
+
+            # Schroeder integration
+
+            # np.cumsum, utilizzata per visualizzare la somma totale dei dati man mano che crescono nel tempo
+            sch = np.cumsum(abs_signal[::-1] ** 2)[::-1]
+            sch_db = 10.0 * np.log10(sch / np.max(sch))
+
+            # Linear regression
+            sch_init = sch_db[np.abs(sch_db - init).argmin()]  # indice minimo inizio
+            sch_end = sch_db[np.abs(sch_db - end).argmin()]  # indice minimo fine
+            init_sample = np.where(sch_db == sch_init)[0][0]  # dove inizia indice
+            end_sample = np.where(sch_db == sch_end)[0][0]  # dove inizia indice
+            x = (
+                np.arange(init_sample, end_sample + 1) / fs
+            )  # trovo in secondi il decadimento #arange ritorna valori
+            # equalmente spaziati tra gli intervalli dati
+            y = sch_db[
+                init_sample : end_sample + 1
+            ]  # tutto l'array tranne il campione iniziale e quello finale
+            slope, intercept = stats.linregress(x, y)[
+                0:2
+            ]  # calcolo la regressione lineare, estraiamo i parametri di slope
+            # ed intercept (Intercept of the regression line), parametri utili al calcolo dei valori di inizio e fine
+            # regressione per trovare il T60
+
+            # Reverberation time (T30, T20, T10 or EDT)
+            db_regress_init = (init - intercept) / slope
+            db_regress_end = (end - intercept) / slope
+            t60[band] = factor * (db_regress_end - db_regress_init)
+
+        return t60
+
+    def sabine_absorption_area(sabine_t60, volume):
+        """
+        Equivalent absorption surface or area in square meters following Sabine's formula
+
+        Parameters
+        ----------
+        sabine_t60: array
+            The result of the t60_impulse() function
+
+        volume: scalar
+            The volume of the room
+
+        Returns
+        -------
+        absorption_area: scalar
+            The equivalent absorption surface
+        """
+        absorption_area = (0.161 * volume) / sabine_t60
+
+        return absorption_area
+
+    def play():
+
+        sweep = generate_exponential_sweep(
+            sweep_duration_option,
+            sample_rate_option,
+            20,
+            24000,
+        )
+        inv_filter = generate_inverse_filter(
+            sweep_duration_option,
+            sample_rate_option,
+            sweep,
+            20,
+            24000,
+        )
+
+        write_wav_file(
+            file_name=sweep_string,
+            rate=sample_rate_option,
+            data=add_zeros(sweep, max_reverb_option + 1, sample_rate_option),
+        )
+        write_wav_file(
+            file_name=inv_filter_string,
+            rate=sample_rate_option,
+            data=add_zeros(inv_filter, max_reverb_option + 1, sample_rate_option),
+        )
+
+        read_file_path = os.path.join(AUDIO_FILES_PATH, sweep_string)
+        # Extract data and sampling rate from file
+        sample_rate, data = wavfile.read(read_file_path)
+
+        user_sweep = sd.playrec(data, sample_rate, channels=1, blocking=True)
+
+        write_wav_file(
+            file_name=user_sweep_string, rate=sample_rate_option, data=user_sweep
+        )
+
+        time.sleep(1)
+
+        remove_silence(user_sweep_string)
+        remove_silence(inv_filter_string)
+
+        user_sweep = load_wav_file(user_sweep_string)
+        inverse_filter = load_wav_file(inv_filter_string)
+
+        write_wav_file(
+            file_name=ir_string,
+            rate=sample_rate_option,
+            data=deconvolve(user_sweep, inverse_filter),
+        )
+
+    def plot_waveform(file):
+        data = load_wav_file(file)
+        sig = np.frombuffer(data, dtype=np.float32)
+        sig = sig[:]
+
+        plt.figure(1)
+
+        plot_a = plt.subplot(211)
+        plot_a.plot(sig)
+        plot_a.set_xlabel("sample rate * time")
+        plot_a.set_ylabel("Energy")
+
+        plt.show()
+
+    def plot_spectrogam(file):
+        data = load_wav_file(file)
+        sig = np.frombuffer(data, dtype=np.float32)
+        sig = sig[:]
+
+        plt.figure(1)
+
+        plot_b = plt.subplot(212)
+        plot_b.specgram(sig, NFFT=1024, Fs=sample_rate_option, noverlap=900)
+        plot_b.set_xlabel("Time")
+        plot_b.set_ylabel("Frequency")
+
+        plt.show()
+
+    def plot_spectrum(file):
+        data = load_wav_file(file)
+        # Sample rate and duration
+        duration = sweep_duration_option  # In seconds
+
+        # Time array
+        x = np.arange(np.round(sample_rate_option * duration)) / sample_rate_option
+
+        # Filter (only octave spectra)
+        spl, freq = PyOctaveBand.octavefilter(
+            data, fs=sample_rate_option, fraction=3, order=6, limits=[12, 20000], show=1
+        )
+
+        # Filter (get spectra and signal in bands)
+        splb, freqb, xb = PyOctaveBand.octavefilter(
+            data,
+            fs=sample_rate_option,
+            fraction=3,
+            order=6,
+            limits=[12, 20000],
+            show=0,
+            sigbands=1,
+        )
+
+        fig, ax = plt.subplots()
+        ax.semilogx(freq, spl, "b")
+        ax.grid(which="major")
+        ax.grid(which="minor", linestyle=":")
+        ax.set_xlabel(r"Frequency [Hz]")
+        ax.set_ylabel("Level [dB]")
+        plt.xlim(11, 25000)
+        ax.set_xticks([63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000])
+        ax.set_xticklabels(["63", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"])
+        plt.show()
+
+    def user_input():
+        global sweep_string
+        global inv_filter_string
+        global user_sweep_string
+        global ir_string
+        user_input = st.text_input("Name your file: ")
+
+        if user_input:
+            sweep_string = user_input + "_exponential_sweep.wav"
+            inv_filter_string = user_input + "_inverse_filter.wav"
+            user_sweep_string = user_input + "_user_exponential_sweep.wav"
+            ir_string = user_input + "_impulse_response.wav"
+
+            play_button = st.button("Play")
+
+            if "play_button_state" not in st.session_state:
+                st.session_state.play_button_state = False
+
+            if play_button or st.session_state.play_button_state:
+                st.session_state.play_button_state = True
+
+                play()
+
+                st.pyplot(plot_waveform(ir_string))
+
+                st.pyplot(plot_spectrogam(ir_string))
+                st.pyplot(plot_spectrogam(user_sweep_string))
+
+                st.pyplot(plot_spectrum(ir_string))
+                st.pyplot(plot_spectrum(user_sweep_string))
+
+                t20 = t60_impulse(ir_string, third(160, 5000), rt="t20")
+                t30 = t60_impulse(ir_string, third(160, 5000), rt="t30")
+
+                graph = np.concatenate((t30, t20), axis=0)
+
+                l1 = [
+                    "160",
+                    "200",
+                    "250",
+                    "315",
+                    "400",
+                    "500",
+                    "630",
+                    "800",
+                    "1000",
+                    "1250",
+                    "1600",
+                    "2000",
+                    "2500",
+                    "3150",
+                    "4000",
+                    "5000",
+                ]
+
+                # st.write(t30)
+                # st.write(data)
+                df = pd.DataFrame({"Hz": l1, "Sec": t30})
+                st.write(df)
+                st.bar_chart(df, x="Hz", y="Sec", use_container_width=True)
+
+    select_option()
+    user_input()
 
 
 if __name__ == "__main__":
     import os
 
-    DEBUG = os.environ.get("DEBUG", "false").lower() not in ["false", "no", "0"]
-
-    logging.basicConfig(
-        format="[%(asctime)s] %(levelname)7s from %(name)s in %(pathname)s:%(lineno)d: "
-        "%(message)s",
-        force=True,
-    )
-
-    logger.setLevel(level=logging.DEBUG if DEBUG else logging.INFO)
-
-    st_webrtc_logger = logging.getLogger("streamlit_webrtc")
-    st_webrtc_logger.setLevel(logging.DEBUG)
-
-    fsevents_logger = logging.getLogger("fsevents")
-    fsevents_logger.setLevel(logging.WARNING)
-
     main()
+    app_room_measurements()
