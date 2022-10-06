@@ -10,34 +10,9 @@ from pydub.silence import split_on_silence
 from numba import jit
 from scipy import signal
 from scipy.io import wavfile
-from scipy import stats
-import pandas as pd
-import acoustics
-import acoustics.bands
-import acoustics.octave
-from acoustics.bands import (
-    _check_band_type,
-    octave_low,
-    octave_high,
-    third_low,
-    third_high,
-)
-from acoustics.signal import bandpass
-from acoustics.standards.iec_61672_1_2013 import (
-    NOMINAL_OCTAVE_CENTER_FREQUENCIES,
-    NOMINAL_THIRD_OCTAVE_CENTER_FREQUENCIES,
-)
 
 
 import PyOctaveBand
-
-try:
-    from pyfftw.interfaces.numpy_fft import rfft
-except ImportError:
-    from numpy.fft import rfft
-
-OCTAVE_CENTER_FREQUENCIES = NOMINAL_OCTAVE_CENTER_FREQUENCIES
-THIRD_OCTAVE_CENTER_FREQUENCIES = NOMINAL_THIRD_OCTAVE_CENTER_FREQUENCIES
 
 st.set_option("deprecation.showPyplotGlobalUse", False)
 
@@ -226,135 +201,6 @@ def app_room_measurements():
 
         combined.export(f"./{AUDIO_FILES_PATH}/{wavefile_name}", format="wav")
 
-    def third(first, last):
-        """
-        Generate a Numpy array for central frequencies of third octave bands.
-
-        Parameters
-        ----------
-        first : scalar
-        First third octave center frequency.
-
-        last : scalar
-            Last third octave center frequency.
-
-        Returns
-        -------
-        octave_bands : array
-            An array of center frequency third octave bands.
-        """
-
-        return acoustics.signal.OctaveBand(fstart=first, fstop=last, fraction=3).nominal
-
-    def t60_impulse(file_name, bands, rt="t30"):  # pylint: disable=too-many-locals
-        """
-        Reverberation time from a WAV impulse response.
-
-        Parameters
-        ----------
-        file: .wav
-            Name of the WAV file containing the impulse response.
-
-        bands: array
-            Octave or third bands as NumPy array.
-
-        rt: instruction
-            Reverberation time estimator. It accepts `'t30'`, `'t20'`, `'t10'` and `'edt'`.
-
-        Returns
-        -------
-        t60: array
-            Reverberation time :math:`T_{60}`
-        """
-        save_file_path = os.path.join(AUDIO_FILES_PATH, file_name)
-        fs, raw_signal = wavfile.read(save_file_path)
-        band_type = _check_band_type(bands)
-
-        if band_type == "octave":
-            low = octave_low(bands[0], bands[-1])  # [-1] = last element in the list
-            high = octave_high(bands[0], bands[-1])
-        elif band_type == "third":
-            low = third_low(bands[0], bands[-1])
-            high = third_high(bands[0], bands[-1])
-
-        # Obbligo rt ad essere lower-case
-        rt = rt.lower()
-        if rt == "t30":
-            init = -5.0
-            end = -35.0
-            factor = 2.0
-        elif rt == "t20":
-            init = -5.0
-            end = -25.0
-            factor = 3.0
-        elif rt == "t10":
-            init = -5.0
-            end = -15.0
-            factor = 6.0
-        elif rt == "edt":
-            init = 0.0
-            end = -10.0
-            factor = 6.0
-
-        t60 = np.zeros(bands.size)
-
-        for band in range(bands.size):
-            # Filtering signal
-            filtered_signal = bandpass(raw_signal, low[band], high[band], fs, order=8)
-            abs_signal = np.abs(filtered_signal) / np.max(np.abs(filtered_signal))
-
-            # Schroeder integration
-
-            # np.cumsum, utilizzata per visualizzare la somma totale dei dati man mano che crescono nel tempo
-            sch = np.cumsum(abs_signal[::-1] ** 2)[::-1]
-            sch_db = 10.0 * np.log10(sch / np.max(sch))
-
-            # Linear regression
-            sch_init = sch_db[np.abs(sch_db - init).argmin()]  # indice minimo inizio
-            sch_end = sch_db[np.abs(sch_db - end).argmin()]  # indice minimo fine
-            init_sample = np.where(sch_db == sch_init)[0][0]  # dove inizia indice
-            end_sample = np.where(sch_db == sch_end)[0][0]  # dove inizia indice
-            x = (
-                np.arange(init_sample, end_sample + 1) / fs
-            )  # trovo in secondi il decadimento #arange ritorna valori
-            # equalmente spaziati tra gli intervalli dati
-            y = sch_db[
-                init_sample : end_sample + 1
-            ]  # tutto l'array tranne il campione iniziale e quello finale
-            slope, intercept = stats.linregress(x, y)[
-                0:2
-            ]  # calcolo la regressione lineare, estraiamo i parametri di slope
-            # ed intercept (Intercept of the regression line), parametri utili al calcolo dei valori di inizio e fine
-            # regressione per trovare il T60
-
-            # Reverberation time (T30, T20, T10 or EDT)
-            db_regress_init = (init - intercept) / slope
-            db_regress_end = (end - intercept) / slope
-            t60[band] = factor * (db_regress_end - db_regress_init)
-
-        return t60
-
-    def sabine_absorption_area(sabine_t60, volume):
-        """
-        Equivalent absorption surface or area in square meters following Sabine's formula
-
-        Parameters
-        ----------
-        sabine_t60: array
-            The result of the t60_impulse() function
-
-        volume: scalar
-            The volume of the room
-
-        Returns
-        -------
-        absorption_area: scalar
-            The equivalent absorption surface
-        """
-        absorption_area = (0.161 * volume) / sabine_t60
-
-        return absorption_area
-
     def play():
 
         sweep = generate_exponential_sweep(
@@ -493,42 +339,8 @@ def app_room_measurements():
                 play()
 
                 st.pyplot(plot_waveform(ir_string))
-
                 st.pyplot(plot_spectrogam(ir_string))
-                st.pyplot(plot_spectrogam(user_sweep_string))
-
                 st.pyplot(plot_spectrum(ir_string))
-                st.pyplot(plot_spectrum(user_sweep_string))
-
-                t20 = t60_impulse(ir_string, third(160, 5000), rt="t20")
-                t30 = t60_impulse(ir_string, third(160, 5000), rt="t30")
-
-                graph = np.concatenate((t30, t20), axis=0)
-
-                l1 = [
-                    "160",
-                    "200",
-                    "250",
-                    "315",
-                    "400",
-                    "500",
-                    "630",
-                    "800",
-                    "1000",
-                    "1250",
-                    "1600",
-                    "2000",
-                    "2500",
-                    "3150",
-                    "4000",
-                    "5000",
-                ]
-
-                # st.write(t30)
-                # st.write(data)
-                df = pd.DataFrame({"Hz": l1, "Sec": t30})
-                st.write(df)
-                st.bar_chart(df, x="Hz", y="Sec", use_container_width=True)
 
     select_option()
     user_input()
